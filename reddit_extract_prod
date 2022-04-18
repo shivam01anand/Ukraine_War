@@ -1,0 +1,267 @@
+from posixpath import islink
+import pyspark
+from pyspark.sql import SparkSession
+import warnings
+from IPython.core.display import display, HTML
+import os
+import json
+import os
+import pprint
+from pprint import pprint
+from re import M
+from black import List
+import praw
+import pyspark
+import yaml
+from dataclasses import dataclass, field
+from typing import Dict, Tuple, List
+import numpy as np
+import pyspark
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+from pyspark.sql import SparkSession
+import logging
+import boto3
+from botocore.exceptions import ClientError
+import os
+from pyspark.sql.types import DateType
+from pyspark.sql import functions as f
+from pyspark.sql.functions import col, lit
+from datetime import datetime
+from pyspark.sql.types import IntegerType
+from pyspark import SparkContext, SparkConf
+import findspark
+
+findspark.init()
+import pyspark
+
+# sc._gateway.jvm.org.apache.hadoop.util.VersionInfo.getVersion()
+
+# os.environ[
+#     "PYSPARK_SUBMIT_ARGS"
+# ] = "-- packages com.amazonaws:aws-java-sdk:1.11.828,org.apache.hadoop:hadoop-aws:2.7.4 pyspark-shell"
+
+
+#############TRYING https://towardsai.net/p/programming/pyspark-aws-s3-read-write-operations ####################
+
+
+def convert_bytes(num):
+    """
+    this function will convert bytes to MB.... GB... etc
+    """
+    for x in ["bytes", "KB", "MB", "GB", "TB"]:
+        if num < 1024.0:
+            return "%3.1f %s" % (num, x)
+        num /= 1024.0
+
+
+def file_size(file_path):
+    """
+    this function will return the file size
+    """
+    if os.path.isfile(file_path):
+        file_info = os.stat(file_path)
+        return convert_bytes(file_info.st_size)
+
+
+def get_post_user(post):
+
+    if post.author:
+        if post.author.name:
+            return post.author.name
+        else:
+            return "deleted"
+    else:
+        return "deleted"
+
+
+# spark = SparkSession.builder.appName("ukraine_posts").getOrCreate()
+# spark
+
+
+class Config:
+    def __init__(self):
+        self.config_file = yaml.safe_load(open("config.yaml"))
+
+    def load_praw(self):
+        return praw.Reddit(
+            client_id=self.config_file["praw"]["client_id"],
+            client_secret=self.config_file["praw"]["client_secret"],
+            user_agent=self.config_file["praw"]["user_agent"],
+        )
+
+    def load_s3(self):
+        return boto3.client(
+            "s3",
+            aws_access_key_id=self.config_file["aws"]["aws_access_key_id"],
+            aws_secret_access_key=self.config_file["aws"]["aws_secret_access_key"],
+        )
+
+
+@dataclass(frozen=True)
+class RawAttributesToExtract:
+
+    post: list = field(
+        default_factory=lambda: [
+            "title",
+            "upvote_ratio",
+            "score",
+            "gilded",
+            "ups",
+            "mod_note",
+            "over_18",
+            "distinguished",
+            "removal_reason",
+            "report_reasons",
+            "num_comments",
+            "created_utc",
+            "total_awards_received",
+            "stickied",
+            "url",
+        ]
+    )
+
+    comments: list = field(default_factory=lambda: ["list1", "list2", "list3"])
+
+    users: list = field(default_factory=lambda: ["list1", "list2", "list3"])
+
+
+class UkrainePosts:
+
+    """returns Ukraine posts data
+    as a list of dicts
+    """
+
+    def __init__(self):
+
+        self._subreddits_search_string_dict = {
+            "news": ["ukraine"],
+            "worldnews": ["WorldNews Live Thread"],
+            "volunteersforukraine": ["ukraine"],
+            "politics": ["ukraine"],
+            "ukraine": [" "],
+        }
+
+        self._post_data = []
+
+    def get_subreddit_post_data(
+        self, subreddit_name: str, ukraine_relevant_str: str, limit: int
+    ):
+        """Extracts specfic subreddit's posts,  appends into _data list
+
+        Args:
+            subreddit_name (str): r/???
+            search_strings (str): list of sub strings extracted post can have
+            limit (int): number of posts to search in hot
+        """
+        subreddit = r.subreddit(subreddit_name)
+
+        for post in subreddit.hot(limit=limit):
+
+            if any(s in post.title for s in ukraine_relevant_str):
+
+                raw_attributes = {
+                    x: getattr(post, x) for x in RawAttributesToExtract().post
+                }
+
+                non_raw_attributes = {
+                    "subreddit": subreddit_name,
+                    "user": get_post_user(post),
+                    "post_id": post.id,
+                }
+
+                datum = {**raw_attributes, **non_raw_attributes}
+
+                self._post_data.append(datum)
+
+    def agg_all_subreddits_post_data(self):
+
+        for sub in self._subreddits_search_string_dict:
+            self.get_subreddit_post_data(
+                sub, self._subreddits_search_string_dict[sub], limit=10
+            )
+
+        return self._post_data
+
+
+config = Config()
+
+r = config.load_praw()
+
+# --conf spark.executor.extraClassPath=/hadoop-aws-2.7.4.jar:/aws-java-sdk-1.7.4.jar --driver-class-path /hadoop-aws-2.7.4.jar:/aws-java-sdk-1.7.4.jar
+
+conf = (
+    SparkConf()
+    .set("spark.executor.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+    .set("spark.driver.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+    .setAppName("pyspark_aws")
+    .setMaster("local[*]")
+)
+
+sc = SparkContext(conf=conf)
+
+sc.setSystemProperty("com.amazonaws.services.s3.enableV4", "true")
+
+hadoopConf = sc._jsc.hadoopConfiguration()
+hadoopConf.set("fs.s3a.access.key", config.config_file["aws"]["aws_access_key_id"])
+hadoopConf.set("fs.s3a.secret.key", config.config_file["aws"]["aws_secret_access_key"])
+hadoopConf.set("fs.s3a.endpoint", "s3.amazonaws.com")
+hadoopConf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+
+spark = SparkSession(sc)
+
+posts_data = UkrainePosts().agg_all_subreddits_post_data()
+
+spark = SparkSession.builder.appName("Ukraine").getOrCreate()
+sc = spark.sparkContext
+spark
+
+# conf = (
+#     SparkConf()
+#     .set("spark.executor.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+#     .set("spark.driver.extraJavaOptions", "-Dcom.amazonaws.services.s3.enableV4=true")
+#     .setAppName("pyspark_aws")
+#     .setMaster("local[*]")
+# )
+
+schema = StructType(
+    [StructField(col, StringType(), True) for col in posts_data[0].keys()]
+)
+
+
+posts_df = spark.createDataFrame([Row(**x) for x in posts_data], schema=schema)
+
+posts_df = posts_df.select(
+    [c for c in posts_df.columns if c not in {"created_utc", "ups"}]
+    + [f.to_timestamp(col("created_utc") / 1).alias("created_datetime")]
+    + [(f.col("score") / f.col("upvote_ratio")).alias("upvotes").cast(IntegerType())]
+).select(
+    ["*", (f.col("upvotes") - f.col("score")).alias("downvotes").cast(IntegerType())]
+)  # .show(vertical=True, n=1)
+
+posts_df.show(vertical=True, n=1)
+
+# posts_df.write.parquet("/tmp/output/people.parquet")
+
+s3 = Config().load_s3()
+
+s3.list_buckets()
+
+posts_df.write.parquet("s3a://postspraw/test.parquet", mode="overwrite")
+
+posts_df.write.parquet("s3a://postspraw/")
+
+posts_df.write.partitionBy("subreddit").option("header", "true").parquet(
+    "s3a://postspraw/"
+)
+
+# posts_df.write.format("csv").option("header", "true").save(
+#     "s3a://postpraws", mode="overwrite"
+# )
+
+
+obj = s3.get_object(Bucket="postspraw", Key="test.parquet")
+
+s3.bucket("postspraw")
+# s3a://sparkbyexamples/parquet/people.parquet

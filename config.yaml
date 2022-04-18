@@ -1,0 +1,8 @@
+praw:
+  client_id: "L685-1uBBrLbKQ"
+  client_secret: "_Fk5nW1L2h3VRR6BVnkusMh43QQ_gg"
+  user_agent: "shivam01anand"
+
+aws:
+  aws_access_key_id: "AKIAS2CRS3I5JZOHQETP"
+  aws_secret_access_key: "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"
